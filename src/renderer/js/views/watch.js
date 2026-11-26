@@ -26,8 +26,7 @@ export function watchView(params) {
     el.classList.toggle('theater', theater);
     if (theater) { if (frame.parentElement !== stage) stage.append(frame); }
     else if (frame.parentElement !== mainCol) mainCol.prepend(frame);
-    if (player.el.parentElement !== frame) player.mount(frame, 'page');
-    else player.mount(frame, 'page');
+    player.mount(frame, 'page');
   }
 
   function render() {

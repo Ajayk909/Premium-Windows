@@ -1,11 +1,11 @@
 // Premium for Windows — main process.
 // Owns the window, the YouTube data layer, the stream proxy and everything saved to disk.
-import { app, BrowserWindow, ipcMain, protocol, net, shell, session, nativeTheme, dialog, Menu } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, session, nativeTheme, dialog, Menu } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import * as yt from './innertube.js';
-import * as streams from './streams.js';
+import * as ytsession from './ytsession.js';
 import * as roku from './roku.js';
 import * as google from './google.js';
 import { Store } from './store.js';
@@ -15,12 +15,6 @@ const isDev = !app.isPackaged;
 
 // One copy of the app at a time; a second launch just focuses the first window.
 if (!app.requestSingleInstanceLock()) app.quit();
-
-// ytv:// is our stream proxy. Video segments go through the main process so we can send
-// the headers YouTube's servers expect and so the page never runs into CORS.
-protocol.registerSchemesAsPrivileged([
-  { scheme: 'ytv', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true, bypassCSP: true } }
-]);
 
 let win;
 const store = new Store(app.getPath('userData'));
@@ -43,6 +37,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
       backgroundThrottling: false,
       spellcheck: false
     }
@@ -90,45 +85,6 @@ function debounce(fn, ms) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-// ---------- Stream proxy ----------
-
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, HEAD, OPTIONS',
-  'Access-Control-Expose-Headers': '*'
-};
-
-function registerProxy() {
-  protocol.handle('ytv', async (request) => {
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
-    const u = new URL(request.url);
-    const target = 'https://' + u.host + u.pathname + u.search;
-    const headers = {
-      'User-Agent': streams.userAgentFor(u.searchParams.get('c')),
-      'Origin': 'https://www.youtube.com',
-      'Referer': 'https://www.youtube.com/',
-      'Accept': '*/*'
-    };
-    const range = request.headers.get('range');
-    if (range) headers['Range'] = range;
-    let body;
-    if (request.method === 'POST') body = Buffer.from(await request.arrayBuffer());
-    try {
-      const res = await net.fetch(target, { method: request.method, headers, body, redirect: 'follow', bypassCustomProtocolHandlers: true });
-      const out = new Headers();
-      for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
-        const v = res.headers.get(k);
-        if (v) out.set(k, v);
-      }
-      for (const [k, v] of Object.entries(CORS)) out.set(k, v);
-      return new Response(res.body, { status: res.status, statusText: res.statusText, headers: out });
-    } catch (err) {
-      return new Response(String(err?.message || err), { status: 502, headers: CORS });
-    }
-  });
-}
-
 // ---------- IPC ----------
 
 function handle(name, fn) {
@@ -162,7 +118,6 @@ function registerIpc() {
   handle('yt:playlist', (id, cont) => yt.playlist(id, cont));
 
   // Streams
-  handle('streams:get', (id, from) => streams.get(id, from));
 
 }
 
@@ -180,7 +135,6 @@ async function registerMockIpc() {
   handle('yt:dislikes', () => ({ likes: 48000, dislikes: 312 }));
   handle('yt:resolve', (u) => yt.resolve(u));
   handle('yt:playlist', () => ({ title: 'Mock playlist', items: mock.search('x').items, continuation: null }));
-  handle('streams:get', () => mock.streams());
   registerSharedIpc();
 }
 
@@ -234,6 +188,35 @@ function registerSharedIpc() {
   handle('app:copy', (text) => import('electron').then(({ clipboard }) => clipboard.writeText(String(text))));
 }
 
+// The only <webview> Premium creates is the hidden YouTube player. Lock it down: its own session,
+// our preload (no Node), autoplay allowed, no popups, and it can't navigate away from YouTube.
+app.on('web-contents-created', (_e, contents) => {
+  contents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (params.src && !/^https:\/\/www\.youtube\.com\//.test(params.src)) { event.preventDefault(); return; }
+    delete webPreferences.preloadURL;
+    webPreferences.preload = path.join(here, '..', 'engine', 'preload.cjs');
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    webPreferences.sandbox = true;
+    webPreferences.webSecurity = true;
+    webPreferences.autoplayPolicy = 'no-user-gesture-required';
+    webPreferences.backgroundThrottling = false;
+    webPreferences.spellcheck = false;
+    params.partition = ytsession.PARTITION;
+  });
+  if (contents.getType() === 'webview') {
+    contents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:/.test(url)) shell.openExternal(url);
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (e, url) => {
+      if (!/^https:\/\/(www\.|m\.)?youtube\.com\//.test(url) && !/^https:\/\/consent\.(youtube|google)\.com\//.test(url)) e.preventDefault();
+    });
+    contents.setAudioMuted(false);
+  }
+});
+
 app.on('second-instance', (_e, argv) => {
   // Google's sign-in redirect arrives here as a premium link on the command line.
   const url = google.findUrl(argv);
@@ -254,9 +237,8 @@ app.whenReady().then(async () => {
     }
   );
   google.init(app.getPath('userData'), (text) => send('google:progress', text));
-  registerProxy();
+  await ytsession.setup(app.getPath('userData'));
   await registerIpc();
-  streams.init(app.getPath('userData')).catch((e) => console.error('[streams:init]', e));
   createWindow();
   if (process.env.PREMIUM_SHOT) import('./devshots.js').then((m) => m.run(win, process.env.PREMIUM_SHOT)).catch((e) => console.error(e));
 });

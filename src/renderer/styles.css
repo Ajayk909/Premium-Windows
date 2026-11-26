@@ -667,7 +667,6 @@ body.side-collapsed .side-sep { margin: 8px 6px; }
 [data-theme="classic"] .mini { border-radius: 12px; }
 .mini.show { transform: none; opacity: 1; pointer-events: auto; }
 .mini-video { position: relative; aspect-ratio: 16 / 9; border-radius: 15px; overflow: hidden; background: #000; cursor: pointer; }
-.mini-video .player { position: absolute; inset: 0; border-radius: 0; box-shadow: none; aspect-ratio: auto; height: 100%; }
 .mini-info { display: flex; align-items: center; gap: 6px; padding: 8px 2px 10px 8px; cursor: pointer; }
 .mini-text { flex: 1; min-width: 0; }
 .mini-title { font-weight: 650; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -683,7 +682,6 @@ body.side-collapsed .side-sep { margin: 8px 6px; }
 .watch { max-width: 1820px; margin: 0 auto; }
 .watch-stage { display: none; }
 .watch.theater .watch-stage { display: block; margin: -4px -4px 22px; }
-.watch.theater .player-frame .player { aspect-ratio: auto; height: min(calc(100vh - 150px), 56.25vw); }
 .watch-cols { display: grid; grid-template-columns: minmax(0, 1fr) 404px; gap: 28px; }
 .watch-main { min-width: 0; }
 .watch-main > .player-frame { margin-bottom: 18px; }
@@ -1012,3 +1010,31 @@ body.on-shorts .mini { opacity: 0; pointer-events: none; transform: translateY(c
 .empty .btn.ghost.small { margin-top: 2px; }
 
 .player-error-details { font: 11.5px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; opacity: .55 !important; max-width: 620px !important; user-select: text; overflow-wrap: anywhere; }
+
+/* ---------- Hover previews (frame flip) ---------- */
+.preview-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.preview-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity .35s var(--ease); }
+.preview-frame.on { opacity: 1; }
+.preview-bar div { transition: transform .9s linear; }
+
+/* ---------- Floating player layer (YouTube's player under Premium's controls) ---------- */
+.player.floating { position: fixed; z-index: 20; aspect-ratio: auto; transition: border-radius .3s var(--ease); }
+.player.floating:not(.placed) { visibility: hidden; pointer-events: none; }
+.player.floating.mini { z-index: 46; border-radius: 15px; box-shadow: none; }
+.player.floating.in-short { z-index: 20; border-radius: 0; box-shadow: none; background: #000; }
+[data-theme="classic"] .player.floating.mini { border-radius: 10px; }
+.player-frame { aspect-ratio: 16 / 9; }
+.watch.theater .player-frame { aspect-ratio: auto; height: min(calc(100vh - 150px), 56.25vw); }
+.player webview.engine { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; pointer-events: none; background: #000; display: flex; }
+.player webview.engine.hidden-video { opacity: 0; }
+.player.has-poster .player-poster { z-index: 1; }
+.player-poster { pointer-events: none; }
+.player.in-short .player-poster { object-fit: cover; }
+.player.in-short .player-controls, .player.in-short .player-shade, .player.in-short .player-skip, .player.in-short .player-upnext { display: none; }
+.player.ad-skipping .player-poster { opacity: 1; z-index: 1; filter: blur(16px) brightness(.6); }
+.player.ad-skipping::after { content: "Skipping ad…"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; padding: 10px 18px; border-radius: 999px; background: rgba(0, 0, 0, .55); color: #fff; font-weight: 600; font-size: 14px; -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
+.player.fullscreen { border-radius: 0 !important; }
+.player-extra { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
+.player-extra .short-channel { pointer-events: auto; }
+.player.in-short.paused .player-extra .short-paused { opacity: 1; }
+.player.in-short .player-flash { display: none; }

@@ -1,40 +1,11 @@
-// Shorts: a full-height vertical feed you scroll (or arrow) through. Each short plays on its own
-// lightweight player and loops, like the app.
+// Shorts: a full-height vertical feed you scroll (or arrow) through. The active short plays in
+// Premium's player (YouTube's own engine underneath) and loops, like the app.
 import { h, ic, api, nav, toast, avatar, chips, emptyState, spinner, saveDialog } from '../ui.js';
 import { library, lib, settings, set, allowed } from '../state.js';
 
-const shaka = window.shaka;
+import * as player from '../player.js';
 
-// shaka only knows http(s)/data/blob, so teach it our ytv:// proxy scheme (main.js) via fetch.
-if (window.shaka && !window.__ytvScheme) {
-  window.__ytvScheme = true;
-  window.shaka.net.NetworkingEngine.registerScheme('ytv', window.shaka.net.HttpFetchPlugin.parse,
-    window.shaka.net.NetworkingEngine.PluginPriority.PREFERRED);
-}
 const SEEDS = ['#shorts', 'funny #shorts', 'satisfying #shorts', 'gaming #shorts', 'music #shorts', 'tech #shorts', 'food #shorts', 'sports #shorts', 'science #shorts', 'travel #shorts'];
-
-let sp = null;
-const video = h('video.short-video', { playsInline: true, loop: true, preload: 'auto' });
-async function ensure() {
-  if (sp) return sp;
-  sp = new shaka.Player();
-  await sp.attach(video);
-  sp.getNetworkingEngine().registerRequestFilter((_t, req) => {
-    req.uris = req.uris.map((u) => u.replace(/^https:\/\/([a-z0-9.-]+\.googlevideo\.com)\//i, 'ytv://$1/'));
-  });
-  sp.configure({
-    abr: { enabled: true, restrictions: { maxHeight: settings.dataSaver ? 480 : 1920 }, defaultBandwidthEstimate: 8_000_000 },
-    streaming: { bufferingGoal: 20, rebufferingGoal: 0.8, retryParameters: { maxAttempts: 3 } }
-  });
-  return sp;
-}
-
-function b64(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
 
 export function shortsView(params) {
   let mode = 'foryou';
@@ -44,7 +15,6 @@ export function shortsView(params) {
   let active = -1;
   let token = 0;
   let loadingMore = false;
-  const infoCache = new Map();
 
   const feed = h('div.shorts-feed');
   const tabs = chips([{ value: 'foryou', label: 'For you' }, { value: 'subs', label: 'Subscriptions' }], mode, (m) => { mode = m; reset(); });
@@ -129,39 +99,35 @@ export function shortsView(params) {
     }
   }
 
-  async function activate(i) {
+  function activate(i) {
     if (i === active || !items[i]) return;
     active = i;
-    const my = ++token;
     const v = items[i];
-    const s = feed.children[i];
+    const sEl = feed.children[i];
     feed.querySelectorAll('.short-slide.active').forEach((x) => x.classList.remove('active'));
-    s.classList.add('active');
-    s.classList.remove('paused');
-    s.querySelector('.short-slot').append(video);
-    video.classList.remove('ready');
+    sEl.classList.add('active');
+    sEl.classList.remove('paused');
     if (i >= items.length - 3) more();
-    try {
-      const p = await ensure();
-      let info = infoCache.get(v.id);
-      if (!info) { info = await api.call('streams:get', v.id, 0); infoCache.set(v.id, info); }
-      if (my !== token) return;
-      await p.unload();
-      if (my !== token) return;
-      const uri = info.kind === 'dash' ? 'data:application/dash+xml;base64,' + b64(info.manifest) : info.url;
-      await p.load(uri, 0, info.kind === 'hls' ? 'application/x-mpegurl' : 'application/dash+xml');
-      if (my !== token) return;
-      video.muted = !!settings.muted;
-      video.volume = settings.volume ?? 1;
-      await video.play().catch(() => {});
-      video.classList.add('ready');
-      lib.addHistory({ ...v, isShort: true });
-      // Warm up the next one.
-      const n = items[i + 1];
-      if (n && !infoCache.has(n.id)) api.call('streams:get', n.id, 0).then((x) => infoCache.set(n.id, x)).catch(() => {});
-    } catch (e) {
-      if (my === token) { toast('This short couldn\'t play — skipping'); setTimeout(() => { if (my === token) step(1); }, 900); }
-    }
+    player.play({ ...v, isShort: true }, { short: true });
+    player.mount(sEl.querySelector('.short-slot'), 'short');
+    lend(sEl);
+  }
+
+  // The player floats above the page, so the active short's caption, progress bar and pause
+  // icon ride along inside it; they go back to their card when another short takes over.
+  let lent = null;
+  function lend(sEl) {
+    giveBack();
+    const nodes = [...sEl.querySelectorAll('.short-overlay, .short-progress, .short-paused')];
+    player.setOverlay(nodes);
+    lent = { sEl, nodes, bar: sEl.querySelector('.short-progress div') };
+  }
+  function giveBack() {
+    if (!lent) return;
+    const card = lent.sEl.querySelector('.short-card');
+    lent.nodes.forEach((n) => card.append(n));
+    player.setOverlay(null);
+    lent = null;
   }
 
   function step(d) {
@@ -170,9 +136,12 @@ export function shortsView(params) {
   }
 
   function toggle() {
-    const s = feed.children[active];
-    if (video.paused) { video.play().catch(() => {}); s?.classList.remove('paused'); }
-    else { video.pause(); s?.classList.add('paused'); }
+    player.toggle();
+    syncPaused();
+  }
+
+  function syncPaused() {
+    feed.children[active]?.classList.toggle('paused', !player.isPlaying());
   }
 
   function reset() {
@@ -181,18 +150,18 @@ export function shortsView(params) {
     items = [];
     continuation = null;
     seeds = [...SEEDS].sort(() => Math.random() - 0.5);
-    video.pause();
+    giveBack();
+    if (player.P.short) player.stop();
     feed.innerHTML = '';
     feed.append(spinner());
     more().then(() => feed.querySelector('.spinner-wrap')?.remove());
   }
 
-  let raf = 0;
-  function progress() {
-    const s = feed.children[active];
-    if (s && video.duration) s.querySelector('.short-progress div').style.transform = `scaleX(${video.currentTime / video.duration})`;
-    raf = requestAnimationFrame(progress);
-  }
+  const offTime = player.P.on('time', (t) => {
+    const d = player.duration();
+    if (lent && d && player.P.short) lent.bar.style.transform = `scaleX(${t / d})`;
+  });
+  const offState = player.P.on('state', syncPaused);
 
   // Start with the shorts we were opened with, then keep going.
   if (params.list?.length) {
@@ -207,23 +176,16 @@ export function shortsView(params) {
   return {
     el,
     onShow() {
-      cancelAnimationFrame(raf);
-      progress();
-      if (active >= 0) {
+      if (active >= 0 && items[active]) {
         const a = active;
         active = -1;
-        if (video.parentElement && video.readyState >= 2 && feed.children[a]?.contains(video)) {
-          active = a;
-          token++;
-          video.play().catch(() => {});
-          feed.children[a].classList.remove('paused');
-        } else activate(a);
+        activate(a);
       } else requestAnimationFrame(() => { activate(Math.round(feed.scrollTop / (feed.clientHeight || 1))); });
     },
     onHide() {
       token++;
-      cancelAnimationFrame(raf);
-      video.pause();
+      giveBack();
+      if (player.P.short) player.stop();
     },
     refresh: reset,
     key(e) {
@@ -231,10 +193,10 @@ export function shortsView(params) {
       if (k === 'arrowdown' || k === 'j') { e.preventDefault(); step(1); }
       else if (k === 'arrowup') { e.preventDefault(); step(-1); }
       else if (k === ' ' || k === 'k') { e.preventDefault(); toggle(); }
-      else if (k === 'm') { e.preventDefault(); video.muted = !video.muted; set('muted', video.muted); toast(video.muted ? 'Muted' : 'Sound on'); }
-      else if (k === 'arrowright' || k === 'l') { e.preventDefault(); video.currentTime = Math.min(video.duration || 0, video.currentTime + 5); }
-      else if (k === 'arrowleft') { e.preventDefault(); video.currentTime = Math.max(0, video.currentTime - 5); }
+      else if (k === 'm') { e.preventDefault(); player.toggleMute(); }
+      else if (k === 'arrowright' || k === 'l') { e.preventDefault(); player.seekBy(5); }
+      else if (k === 'arrowleft') { e.preventDefault(); player.seekBy(-5); }
     },
-    destroy() { io.disconnect(); cancelAnimationFrame(raf); video.pause(); }
+    destroy() { giveBack(); io.disconnect(); offTime(); offState(); }
   };
 }

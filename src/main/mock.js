@@ -46,6 +46,5 @@ export const mock = {
   comments: () => ({ items: Array.from({ length: 8 }, (_, i) => ({ id: 'c' + i, author: '@' + channels[i % 8].toLowerCase().replace(/\s/g, ''), avatar: art(i + 2, 80, 80), text: ['This is the most relaxing thing I have watched all year.', 'The shot at 7:52 is unreal 😮', 'Watching this in 4K on a big screen is a different experience.', 'Came back to this for the third time today.'][i % 4], likes: String(120 + i * 31), published: `${i + 1} days ago`, replies: i % 3 ? String(i * 2) : '' })), next: null }),
   channel: (id) => ({ channel: { id, name: channels[1], avatar: art(4, 160, 160), subscribers: '2.4M subscribers' }, banner: art(6, 2120, 350, ''), handle: '@atlastravel', videoCount: '412 videos', description: 'Slow travel films from places that are hard to get to.', videos: { items: Array.from({ length: 16 }, (_, i) => video(i + 1)), continuation: null } }),
   latestMany: (subs) => Array.from({ length: 18 }, (_, i) => ({ ...video(i + 2), publishedAt: Date.now() - i * 3600e3 * 5, isShort: i % 6 === 5 })),
-  streams: () => { throw new Error('Mock mode: no streams'); },
   art, video
 };

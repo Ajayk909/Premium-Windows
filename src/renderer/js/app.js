@@ -215,12 +215,18 @@ function syncPlayerPlacement() {
   const onWatch = currentEntry()?.name === 'watch';
   if (!player.P.current) {
     miniShell.classList.remove('show');
+    player.unmount();
+    return;
+  }
+  if (player.P.short) {
+    // Shorts place the player themselves.
+    miniShell.classList.remove('show');
     return;
   }
   if (onWatch) {
     miniShell.classList.remove('show');
   } else {
-    if (player.el.parentElement !== miniVideoSlot) player.mount(miniVideoSlot, 'mini');
+    player.mount(miniVideoSlot, 'mini');
     miniShell.classList.add('show');
   }
   syncMini();
@@ -270,6 +276,7 @@ nav.cast = (v) => castDialog(v);
 nav.seek = (t) => { player.seekTo(t); };
 nav.toMini = () => { if (currentEntry()?.name === 'watch') { if (index > 0) back(); else go('home'); } };
 nav.current = () => player.P.current;
+nav.openWatch = () => openWatch();
 
 // When the player switches video by itself (autoplay, next), keep the watch page in step.
 player.P.on('change', () => {

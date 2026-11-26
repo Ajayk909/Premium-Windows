@@ -1,16 +1,9 @@
-// The one video player. It lives on the Watch page and moves into the floating mini player
-// when you browse elsewhere — the same <video> element, so playback never restarts.
+// The one video player. Premium's controls on top, YouTube's own player underneath (engine.js).
+// The player floats in a layer above the page and follows whichever spot it's shown in —
+// the Watch page, the mini player or a Short — so playback never restarts when you move around.
 import { h, ic, api, toast, formatTime, menu, closeMenu, nav, thumb } from './ui.js';
 import { settings, set, lib, library } from './state.js';
-
-const shaka = window.shaka;
-
-// shaka only knows http(s)/data/blob, so teach it our ytv:// proxy scheme (main.js) via fetch.
-if (window.shaka && !window.__ytvScheme) {
-  window.__ytvScheme = true;
-  window.shaka.net.NetworkingEngine.registerScheme('ytv', window.shaka.net.HttpFetchPlugin.parse,
-    window.shaka.net.NetworkingEngine.PluginPriority.PREFERRED);
-}
+import * as engine from './engine.js';
 
 const listeners = new Map();
 function emit(evt, payload) { for (const fn of listeners.get(evt) || []) { try { fn(payload); } catch (e) { console.error(e); } } }
@@ -18,14 +11,13 @@ function emit(evt, payload) { for (const fn of listeners.get(evt) || []) { try {
 export const P = {
   current: null,      // the video being played
   details: null,      // watch-page details (title, channel, chapters, related…)
-  info: null,         // stream info from the main process
+  short: false,       // playing a Short (loops, no watch-page extras)
   queue: [],          // explicit queue (playlists, "play next")
   queueIndex: -1,
   segments: [],       // SponsorBlock
   chapters: [],
   captionTracks: [],
   captionTrack: null,
-  cues: [],
   theater: false,
   audioOnly: false,
   loading: false,
@@ -44,9 +36,8 @@ export const P = {
 
 // ---------- DOM ----------
 
-const video = h('video', { playsInline: true, preload: 'auto', crossOrigin: 'anonymous', disablePictureInPicture: false });
+const video = engine.media;
 const poster = h('img.player-poster', { alt: '' });
-const captionBox = h('div.captions');
 const spinner = h('div.player-spinner', h('div.spinner.light'));
 const flash = h('div.player-flash');
 const skipToast = h('div.player-skip');
@@ -84,47 +75,19 @@ const controls = h('div.player-controls',
   )
 );
 
+const extra = h('div.player-extra');
+
 export const el = h('div.player', { tabIndex: -1 },
-  h('div.player-stage', poster, video),
-  captionBox, flash, spinner, skipToast, upNext, errorBox, statsBox,
+  h('div.player-stage', engine.webview, poster),
+  extra,
+  flash, spinner, skipToast, upNext, errorBox, statsBox,
   h('div.player-shade'),
   controls
 );
 
 /** Ambient glow: a tiny canvas the watch page puts behind the player and blurs. */
 export const ambient = h('canvas.ambient', { width: 48, height: 27 });
-const actx = ambient.getContext('2d', { willReadFrequently: false });
-
-// ---------- shaka ----------
-
-let sp = null;
-async function ensureShaka() {
-  if (sp) return sp;
-  shaka.polyfill.installAll();
-  sp = new shaka.Player();
-  await sp.attach(video);
-  sp.getNetworkingEngine().registerRequestFilter((_type, req) => {
-    // Video segments go through our ytv:// proxy (see main.js).
-    req.uris = req.uris.map((u) => u.replace(/^https:\/\/([a-z0-9.-]+\.(?:googlevideo|youtube)\.com)\//i, (m, host) => /googlevideo/.test(host) ? `ytv://${host}/` : m));
-  });
-  sp.configure({
-    streaming: {
-      bufferingGoal: 40,
-      rebufferingGoal: 1.2,
-      bufferBehind: 30,
-      retryParameters: { maxAttempts: 4, baseDelay: 400, backoffFactor: 2, timeout: 20000 },
-      stallEnabled: true
-    },
-    manifest: { dash: { ignoreMinBufferTime: true }, retryParameters: { maxAttempts: 2 } },
-    abr: { enabled: true, restrictToElementSize: true, defaultBandwidthEstimate: 8_000_000, switchInterval: 4 },
-    preferredAudioLanguage: 'en'
-  });
-  sp.addEventListener('error', (e) => onShakaError(e.detail));
-  sp.addEventListener('variantchanged', updateQualityBadge);
-  sp.addEventListener('adaptation', updateQualityBadge);
-  sp.addEventListener('buffering', (e) => setBuffering(e.buffering));
-  return sp;
-}
+const actx = ambient.getContext('2d');
 
 // ---------- Loading ----------
 
@@ -133,42 +96,53 @@ export async function play(v, opts = {}) {
   const sameVideo = P.current?.id === v.id;
   if (sameVideo && !opts.force) {
     if (opts.queue) setQueue(opts.queue, v.id);
+    if (opts.short !== undefined) P.short = !!opts.short;
     emit('change');
     return;
   }
   const token = ++P.token;
   saveProgress();
   P.current = { ...v };
+  P.short = !!opts.short;
   P.details = null;
-  P.info = null;
   P.segments = [];
   P.chapters = [];
   P.captionTracks = [];
   P.captionTrack = null;
-  P.cues = [];
   P.error = null;
-  P.failures = [];
-  P.retriedSame = false;
-  switching = false;
   P.loading = true;
   P.ended = false;
   hideUpNext();
-  if (opts.queue) setQueue(opts.queue, v.id);
+  if (P.short) { P.queue = []; P.queueIndex = -1; }
+  else if (opts.queue) setQueue(opts.queue, v.id);
   else if (!P.queue.some((x) => x.id === v.id)) { P.queue = []; P.queueIndex = -1; }
   else P.queueIndex = P.queue.findIndex((x) => x.id === v.id);
 
   poster.src = thumb(v, true);
   poster.onerror = () => { poster.onerror = null; poster.src = thumb(v); };
   el.classList.add('has-poster');
+  el.classList.toggle('short', P.short);
   errorBox.innerHTML = '';
   el.classList.remove('errored', 'ended');
   setBuffering(true);
-  renderCaptions();
+  drawAmbient();
   renderSeekDecor();
   updateMediaSession();
   emit('change');
 
-  lib.addHistory(v);
+  lib.addHistory(P.short ? { ...v, isShort: true } : v);
+
+  // Start position: what you asked for, or where you left off.
+  let start = opts.startAt;
+  if (start == null && !P.short) {
+    const saved = lib.progress(v.id);
+    const total = durationOf(v);
+    if (saved > 5 && (!total || saved < total - 20)) start = saved;
+  }
+  engine.load(v.id, { start: start || 0, loop: P.short });
+  applyPlaybackPrefs();
+
+  if (P.short) return;
 
   // Details for the watch page (title, chapters, related, comments).
   api.call('yt:details', v.id).then((d) => {
@@ -190,8 +164,11 @@ export async function play(v, opts = {}) {
     P.segments = s;
     renderSeekDecor();
   }).catch(() => {});
+}
 
-  await loadStreams(token, 0, opts.startAt);
+function durationOf(v) {
+  if (!v?.duration) return 0;
+  return String(v.duration).split(':').map(Number).reduce((a, b) => a * 60 + b, 0) || 0;
 }
 
 function pickDefined(o) {
@@ -200,128 +177,27 @@ function pickDefined(o) {
   return out;
 }
 
-async function loadStreams(token, from, startAt) {
-  const v = P.current;
-  try {
-    await ensureShaka();
-    let info;
-    try {
-      info = await api.call('streams:get', v.id, from);
-    } catch (err) {
-      // The main process already tried every remaining client.
-      switching = false;
-      if (token === P.token) showError(new Error([...(P.failures || []), String(err?.message || err)].join(' · ')));
-      return;
-    }
-    if (token !== P.token) return;
-    P.info = info;
-    if (!P.current.duration && info.duration) P.current.duration = formatTime(info.duration);
-    P.captionTracks = info.captions || [];
-
-    let uri, mime;
-    if (info.kind === 'dash') {
-      uri = 'data:application/dash+xml;base64,' + b64(info.manifest);
-      mime = 'application/dash+xml';
-    } else if (info.kind === 'hls') {
-      uri = info.url; mime = 'application/x-mpegurl';
-    } else {
-      uri = info.url; mime = 'application/dash+xml';
-    }
-    applyQualityRestrictions();
-    let start = startAt;
-    if (start == null && !info.live) {
-      const saved = lib.progress(v.id);
-      const total = info.duration || 0;
-      if (saved > 5 && (!total || saved < total - 20)) start = saved;
-    }
-    await sp.unload();
-    if (token !== P.token) return;
-    await sp.load(uri, start ?? null, mime);
-    if (token !== P.token) return;
-    P.loading = false;
-    switching = false;
-    applyQualityPreference();
-    video.playbackRate = settings.speed || 1;
-    video.volume = settings.volume ?? 1;
-    video.muted = !!settings.muted;
-    syncVolumeUI();
-    startCaptionsIfWanted();
-    const playing = video.play();
-    playing?.catch(() => {});
-    armStartWatchdog(token, from);
-    emit('change');
-  } catch (err) {
-    if (token !== P.token) return;
-    console.warn('[player] load failed', from, err);
-    if (P.info) P.failures.push(`${P.info.client}: ${err?.code ? 'shaka ' + err.code : String(err?.message || err)}`);
-    const nextFrom = (P.info?.index ?? from) + 1;
-    if (nextFrom < 7) return loadStreams(token, nextFrom, startAt ?? (video.currentTime > 1 ? video.currentTime : null));
-    switching = false;
-    showError(new Error(P.failures.join(' · ') || String(err?.message || err)));
-  }
+/** Speed, volume, quality and captions follow your settings on every video. */
+function applyPlaybackPrefs() {
+  video.playbackRate = P.short ? 1 : (settings.speed || 1);
+  video.volume = settings.volume ?? 1;
+  video.muted = !!settings.muted;
+  syncVolumeUI();
+  const pref = settings.dataSaver ? Math.min(settings.quality || 480, 480) : settings.quality;
+  P.manualQuality = 0;
+  engine.setQuality(pref ? nearestLevel(pref) : 0);
 }
 
-function b64(str) {
-  const bytes = new TextEncoder().encode(str);
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-
-let watchdog;
-function armStartWatchdog(token, from) {
-  clearTimeout(watchdog);
-  watchdog = setTimeout(() => {
-    // Nothing decoded after 14 s: this client's links aren't working, try the next one.
-    if (token === P.token && video.readyState < 3) {
-      fallback('stalled');
-    }
-  }, 14000);
-  video.addEventListener('playing', () => clearTimeout(watchdog), { once: true });
-}
-
-let lastFallbackToken = -1, fallbackCount = 0;
-let switching = false;
-function fallback(reason) {
-  if (!P.current || !P.info) return;
-  // One failure can fire several errors (each segment request). Switch only once per source.
-  if (switching) return;
-  switching = true;
-  if (lastFallbackToken !== P.token) { lastFallbackToken = P.token; fallbackCount = 0; }
-  P.failures.push(`${P.info.client}: ${reason}`);
-  if (++fallbackCount > 8) return showError(new Error(P.failures.join(' · ')));
-  const at = video.currentTime > 1 ? video.currentTime : null;
-  // If this source played fine for a while, its links probably just went stale: fetch fresh
-  // ones from the same source once before moving on to the next.
-  const refreshSame = video.currentTime > 20 && !P.retriedSame;
-  if (refreshSame) P.retriedSame = true;
-  const from = refreshSame ? P.info.index : P.info.index + 1;
-  console.warn('[player] falling back from', P.info.client, 'because', reason, refreshSame ? '(refreshing same source)' : '');
-  setBuffering(true);
-  loadStreams(P.token, from, at);
-}
-
-function onShakaError(err) {
-  if (!err) return;
-  console.warn('[shaka]', err.code, err);
-  // 1001/1002: HTTP failures (403 = link refused), 3016: decode error, 4000s: manifest problems.
-  if (err.severity === 2 || [1001, 1002, 1003, 3014, 3015, 3016].includes(err.code)) {
-    const why = err.code === 1001 ? `HTTP ${err.data?.[1] ?? '?'}` : err.code === 1003 ? 'timed out' : `shaka ${err.code}`;
-    fallback(why);
-  }
-}
-
-function showError(err) {
+function showError(message) {
   P.loading = false;
-  P.error = err;
+  P.error = message;
   setBuffering(false);
   el.classList.add('errored');
   errorBox.innerHTML = '';
   errorBox.append(
     h('div.player-error-icon', ic('sparkle', 28)),
     h('h3', 'This video can\'t play right now'),
-    h('p', friendly(err)),
-    String(err?.message || '').includes(':') ? h('p.player-error-details', String(err.message)) : null,
+    h('p', friendly(message)),
     h('div.player-error-actions',
       h('button.btn.light', { onclick: () => play(P.current, { force: true }) }, ic('refresh', 18), 'Try again'),
       h('button.btn.ghost-light', { onclick: () => api.call('app:open', `https://www.youtube.com/watch?v=${P.current.id}`) }, ic('external', 18), 'Open on YouTube'))
@@ -329,19 +205,14 @@ function showError(err) {
   emit('change');
 }
 
-function friendly(err) {
-  const m = String(err?.message || err || '');
-  if (m.includes(' · ') || /^[A-Z_]+: /.test(m)) {
-    if (/age|sign in to confirm/i.test(m)) return 'YouTube asks for an age check on this one.';
-    if (/private/i.test(m)) return 'This video is private.';
-    return 'YouTube refused all the ways we tried to play it. The details below tell me what went wrong.';
-  }
-  if (/sign in to confirm your age|age/i.test(m)) return 'YouTube asks for an age check on this one.';
+function friendly(m) {
+  m = String(m || '');
+  if (/sign in to confirm your age|age-restricted|inappropriate/i.test(m)) return 'YouTube asks you to sign in to confirm your age for this one.';
+  if (/not a bot/i.test(m)) return 'YouTube wants to check you\'re not a bot. Open it on YouTube once, then try again.';
   if (/private/i.test(m)) return 'This video is private.';
-  if (/unavailable|removed|terminated/i.test(m)) return 'YouTube says this video isn\'t available.';
-  if (/network|fetch|ENOTFOUND|ECONN|timed? ?out/i.test(m)) return 'Check your internet connection.';
-  if (/^shaka \d+/.test(m)) return `YouTube's video servers refused every way we tried (error ${m.slice(6)}). Try again, or open it on YouTube.`;
-  return m.length < 140 ? m : 'YouTube refused all the ways we tried to play it.';
+  if (/unavailable|removed|terminated|deleted/i.test(m)) return 'YouTube says this video isn\'t available.';
+  if (/couldn't reach|internet|network/i.test(m)) return 'Check your internet connection.';
+  return m.length < 160 ? m : m.slice(0, 157) + '…';
 }
 
 // ---------- Queue ----------
@@ -402,7 +273,7 @@ export function pause() { video.pause(); }
 export function resume() { video.play().catch(() => {}); }
 export function isPlaying() { return !video.paused && !video.ended; }
 export function time() { return video.currentTime || 0; }
-export function duration() { return isFinite(video.duration) ? video.duration : (P.info?.duration || 0); }
+export function duration() { return isFinite(video.duration) ? video.duration : durationOf(P.current); }
 
 export function seekTo(t, show = true) {
   if (!P.current) return;
@@ -456,10 +327,7 @@ export function toggleTheater() {
 }
 
 export async function togglePiP() {
-  try {
-    if (document.pictureInPictureElement) await document.exitPictureInPicture();
-    else await video.requestPictureInPicture();
-  } catch { toast('Picture in picture isn\'t available'); }
+  engine.pip();
 }
 
 export function stop() {
@@ -467,86 +335,103 @@ export function stop() {
   P.token++;
   P.current = null;
   P.details = null;
-  P.info = null;
+  P.short = false;
   P.queue = [];
   P.queueIndex = -1;
-  video.pause();
-  sp?.unload().catch(() => {});
+  engine.stop();
   hideUpNext();
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
+  unmount();
   emit('change');
 }
 
+/** Extra layers drawn on top of the video (Shorts use this for their caption and progress bar). */
+export function setOverlay(nodes) {
+  extra.replaceChildren(...(nodes || []));
+}
+
+// ---------- Placement ----------
+// The player is a floating layer. mount() tells it which element to sit on top of; it then
+// follows that element as the page scrolls or resizes.
+
+let slot = null;
+let placeRaf = 0;
+el.classList.add('floating');
+document.body.append(el);
+
 export function mount(container, mode) {
-  if (el.parentElement !== container) container.append(el);
+  slot = container;
   P.mode = mode;
   el.classList.toggle('mini', mode === 'mini');
+  el.classList.toggle('in-short', mode === 'short');
+  el.classList.add('placed');
+  place();
+  if (!placeRaf) placeRaf = requestAnimationFrame(follow);
   updateAmbientLoop();
 }
 
+export function unmount(container) {
+  if (container && container !== slot) return;
+  slot = null;
+  P.mode = 'none';
+  el.classList.remove('placed', 'mini', 'in-short');
+  park();
+}
+
+function park() {
+  // Keep the page alive (and the sound playing) but out of sight.
+  Object.assign(el.style, { left: '-10000px', top: '0px', width: '320px', height: '180px' });
+}
+
+let lastRect = '';
+function place() {
+  if (document.fullscreenElement === el) return;
+  if (!slot || !slot.isConnected) { park(); lastRect = ''; return; }
+  const r = slot.getBoundingClientRect();
+  if (!r.width || !r.height) { park(); lastRect = ''; return; }
+  const key = `${r.left}|${r.top}|${r.width}|${r.height}`;
+  if (key === lastRect) return;
+  lastRect = key;
+  Object.assign(el.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+}
+
+function follow() {
+  place();
+  placeRaf = slot ? requestAnimationFrame(follow) : 0;
+}
+park();
+
 // ---------- Quality ----------
 
-function label(height, fps) {
-  let base;
-  if (height >= 4320) base = '8K';
-  else if (height >= 2160) base = '4K';
-  else if (height >= 1440) base = '1440p';
-  else base = height + 'p';
-  return base + (fps > 31 ? '60' : '');
+function label(height) {
+  if (height >= 4320) return '8K';
+  if (height >= 2160) return '4K';
+  if (height >= 1440) return '1440p';
+  return height + 'p';
 }
 
-function trackHeight(t) { return Math.min(t.height || 0, t.width || t.height || 0) || t.height || 0; }
-
-function qualityTracks() {
-  if (!sp) return [];
-  const active = sp.getVariantTracks().find((t) => t.active);
-  const byHeight = new Map();
-  for (const t of sp.getVariantTracks()) {
-    if (!t.height) continue;
-    if (active && t.language !== active.language) continue;
-    const hgt = trackHeight(t);
-    const cur = byHeight.get(hgt);
-    const score = (t.frameRate || 30) * 1e9 + (t.videoBandwidth || t.bandwidth);
-    if (!cur || score > cur.score) byHeight.set(hgt, { track: t, score, height: hgt, fps: t.frameRate || 30 });
-  }
-  return [...byHeight.values()].sort((a, b) => b.height - a.height);
+function qualityLevels() {
+  return [...new Set((engine.state().levels || []).map(engine.qualityHeight).filter(Boolean))].sort((a, b) => b - a);
 }
 
-function applyQualityRestrictions() {
-  if (!sp) return;
-  const cap = settings.dataSaver ? 480 : Infinity;
-  sp.configure({ abr: { restrictions: { maxHeight: cap } } });
-}
-
-function applyQualityPreference() {
-  const pref = settings.dataSaver ? Math.min(settings.quality || 480, 480) : settings.quality;
-  if (!pref) { sp.configure({ abr: { enabled: true } }); return; }
-  const list = qualityTracks();
-  const pick = list.find((q) => q.height <= pref) || list[list.length - 1];
-  if (pick) { sp.configure({ abr: { enabled: false } }); sp.selectVariantTrack(pick.track, true); }
-  updateQualityBadge();
+function nearestLevel(pref) {
+  const list = qualityLevels();
+  if (!list.length) return pref;
+  return list.find((x) => x <= pref) || list[list.length - 1];
 }
 
 export function chooseQuality(height) {
-  if (!sp) return;
-  if (!height) {
-    sp.configure({ abr: { enabled: true } });
-    toast('Quality: Auto');
-  } else {
-    const q = qualityTracks().find((x) => x.height === height);
-    if (!q) return;
-    sp.configure({ abr: { enabled: false } });
-    sp.selectVariantTrack(q.track, true, 0);
-    toast('Quality: ' + label(q.height, q.fps));
-  }
   P.manualQuality = height || 0;
-  updateQualityBadge();
+  engine.setQuality(height || 0);
+  toast(height ? 'Quality: ' + label(height) : 'Quality: Auto');
+  setTimeout(updateQualityBadge, 800);
 }
 
 function currentQuality() {
-  const t = sp?.getVariantTracks().find((x) => x.active);
-  return t ? { height: trackHeight(t), fps: t.frameRate || 30 } : null;
+  const st = engine.state();
+  const hgt = Math.min(st.w || 0, st.h || 0) || engine.qualityHeight(st.q);
+  return hgt ? { height: hgt } : null;
 }
 
 function updateQualityBadge() {
@@ -556,22 +441,18 @@ function updateQualityBadge() {
 }
 
 // ---------- Captions ----------
+// YouTube's player draws the captions itself (same styling and timing as YouTube).
 
-async function selectCaptions(track) {
+function selectCaptions(track) {
   P.captionTrack = track;
-  P.cues = [];
-  renderCaptions();
   btnCC.innerHTML = '';
   btnCC.append(ic(track ? 'ccOn' : 'cc', 23));
-  if (!track) return;
-  const token = P.token;
-  try {
-    const cues = await api.call('yt:cues', track.url);
-    if (token !== P.token || P.captionTrack !== track) return;
-    P.cues = cues;
-  } catch {
-    toast('Couldn\'t load captions');
-  }
+  engine.setCaptions(track, captionFontSize());
+}
+
+function captionFontSize() {
+  const s = settings.captionSize || 1;
+  return s <= 0.75 ? -1 : s <= 1 ? 0 : s <= 1.25 ? 1 : s <= 1.5 ? 2 : 3;
 }
 
 function bestCaptionTrack() {
@@ -579,11 +460,6 @@ function bestCaptionTrack() {
   if (!list.length) return null;
   const lang = settings.captionLanguage || (navigator.language || 'en').split('-')[0];
   return list.find((t) => t.lang.startsWith(lang) && !t.auto) || list.find((t) => t.lang.startsWith(lang)) || list.find((t) => !t.auto) || list[0];
-}
-
-function startCaptionsIfWanted() {
-  if (settings.captions) selectCaptions(bestCaptionTrack());
-  else selectCaptions(null);
 }
 
 export function toggleCaptions() {
@@ -594,25 +470,25 @@ export function toggleCaptions() {
   toast(on ? `Captions: ${P.captionTrack?.name || 'On'}` : 'Captions off');
 }
 
-let lastCue = null;
-function renderCaptions() {
-  if (!P.captionTrack || !P.cues.length) {
-    if (lastCue !== null) { captionBox.innerHTML = ''; lastCue = null; }
-    return;
-  }
-  const t = video.currentTime;
-  const active = P.cues.filter((c) => t >= c.start && t < c.end).slice(-2);
-  const key = active.map((c) => c.start).join('|');
-  if (key === lastCue) return;
-  lastCue = key;
-  captionBox.innerHTML = '';
-  for (const c of active) captionBox.append(h('span.cue', c.text));
-}
+
+video.addEventListener('tracks', () => {
+  P.captionTracks = engine.state().tracks || [];
+  if (settings.captions && !P.captionTrack && P.captionTracks.length && !P.short) selectCaptions(bestCaptionTrack());
+  else if (!P.captionTracks.length && P.captionTrack) { P.captionTrack = null; btnCC.innerHTML = ''; btnCC.append(ic('cc', 23)); }
+});
+video.addEventListener('quality', () => {
+  updateQualityBadge();
+  // Re-apply your quality choice once YouTube knows which qualities this video has.
+  const pref = P.manualQuality || (settings.dataSaver ? Math.min(settings.quality || 480, 480) : settings.quality);
+  if (pref && qualityLevels().length) engine.setQuality(nearestLevel(pref));
+});
+video.addEventListener('error', (e) => { if (P.current) showError(e.detail); });
+video.addEventListener('ad', (e) => { el.classList.toggle('ad-skipping', !!e.detail); });
 
 // ---------- Seek bar ----------
 
 function renderSeekDecor() {
-  const d = duration() || P.info?.duration || 0;
+  const d = duration() || 0;
   seekTrack.innerHTML = '';
   const chapters = P.chapters.length ? P.chapters : [{ start: 0, title: '' }];
   chapters.forEach((c, i) => {
@@ -687,13 +563,12 @@ function tick(force = false) {
   const d = duration();
   if (!dragging) paintSeek(t);
   timeLabel.children[0].textContent = formatTime(t);
-  timeLabel.children[2].textContent = P.info?.live ? 'LIVE' : formatTime(d);
+  timeLabel.children[2].textContent = engine.state().live ? 'LIVE' : formatTime(d);
   const ch = [...P.chapters].reverse().find((c) => c.start <= t);
   if (chapterLabel.textContent !== (ch?.title ? '•  ' + ch.title : '')) chapterLabel.textContent = ch?.title ? '•  ' + ch.title : '';
-  renderCaptions();
 
   // SponsorBlock auto-skip.
-  if (!video.paused && P.segments.length) {
+  if (!video.paused && P.segments.length && !P.short) {
     const seg = P.segments.find((s) => t >= s.start && t < s.end - 0.35);
     if (seg) {
       const key = P.current.id + seg.start;
@@ -730,7 +605,7 @@ function loop() {
 }
 
 function saveProgress() {
-  if (!P.current || P.info?.live) return;
+  if (!P.current || P.short || engine.state().live) return;
   const t = video.currentTime, d = duration();
   if (!t || t < 5) return;
   lib.setProgress(P.current.id, d && t > d - 20 ? null : t);
@@ -738,19 +613,17 @@ function saveProgress() {
 
 // ---------- Ambient glow ----------
 
-let ambientTimer = 0;
+// The player runs in its own process, so its frames can't be read; the glow is drawn from the
+// video's thumbnail instead (blurred heavily, it reads the same).
+const ambientImg = new Image();
+ambientImg.crossOrigin = 'anonymous';
+ambientImg.onload = () => { try { actx.clearRect(0, 0, ambient.width, ambient.height); actx.drawImage(ambientImg, 0, 0, ambient.width, ambient.height); } catch {} };
+function drawAmbient() {
+  if (P.current) ambientImg.src = `https://i.ytimg.com/vi/${P.current.id}/mqdefault.jpg`;
+}
 function updateAmbientLoop() {
-  clearInterval(ambientTimer);
   const on = settings.ambient && P.mode === 'page' && document.documentElement.dataset.glass === '1';
   ambient.classList.toggle('on', on);
-  if (!on) return;
-  const draw = () => {
-    if (video.readyState >= 2 && !P.audioOnly) {
-      try { actx.drawImage(video, 0, 0, ambient.width, ambient.height); } catch {}
-    }
-  };
-  draw();
-  ambientTimer = setInterval(draw, 280);
 }
 export function refreshAmbient() { updateAmbientLoop(); }
 
@@ -817,15 +690,14 @@ function hideUpNext() {
 
 function openSettings(anchor) {
   const q = currentQuality();
-  const auto = sp?.getConfiguration().abr.enabled;
+  const auto = !P.manualQuality;
   const speedLabel = (video.playbackRate === 1 ? 'Normal' : video.playbackRate + '×');
   const ccLabel = P.captionTrack ? P.captionTrack.name : 'Off';
   const sleepLabel = P.sleepAt ? `${Math.ceil((P.sleepAt - Date.now()) / 60000)} min` : P.sleepEndOfVideo ? 'End of video' : 'Off';
   menu([
-    { icon: 'quality', label: 'Quality', hint: (auto ? 'Auto' : '') + (q ? (auto ? ' · ' : '') + label(q.height, q.fps) : ''), keepOpen: true, action: () => qualityMenu(anchor) },
+    { icon: 'quality', label: 'Quality', hint: (auto ? 'Auto' : '') + (q ? (auto ? ' · ' : '') + label(q.height) : ''), keepOpen: true, action: () => qualityMenu(anchor) },
     { icon: 'speed', label: 'Playback speed', hint: speedLabel, keepOpen: true, action: () => speedMenu(anchor) },
     { icon: 'cc', label: 'Captions', hint: ccLabel, keepOpen: true, action: () => captionsMenu(anchor) },
-    audioTracks().length > 1 ? { icon: 'headphones', label: 'Audio track', hint: sp.getVariantTracks().find((t) => t.active)?.language || '', keepOpen: true, action: () => audioMenu(anchor) } : null,
     { icon: 'moon', label: 'Sleep timer', hint: sleepLabel, keepOpen: true, action: () => sleepMenu(anchor) },
     { icon: 'headphones', label: 'Audio only', checked: P.audioOnly, action: () => toggleAudioOnly() },
     '-',
@@ -835,13 +707,13 @@ function openSettings(anchor) {
 }
 
 function qualityMenu(anchor) {
-  const list = qualityTracks();
-  const auto = sp?.getConfiguration().abr.enabled;
+  const list = qualityLevels();
+  const auto = !P.manualQuality;
   const q = currentQuality();
   menu([
     { header: 'Quality' },
-    { label: 'Auto' + (auto && q ? ` (${label(q.height, q.fps)})` : ''), checked: auto, action: () => chooseQuality(0) },
-    ...list.map((x) => ({ label: label(x.height, x.fps), hint: x.height >= 2160 ? (x.height >= 4320 ? '8K' : '4K') : x.height >= 720 ? 'HD' : '', checked: !auto && q?.height === x.height, action: () => chooseQuality(x.height) }))
+    { label: 'Auto' + (auto && q ? ` (${label(q.height)})` : ''), checked: auto, action: () => chooseQuality(0) },
+    ...list.map((x) => ({ label: label(x), hint: x >= 2160 ? (x >= 4320 ? '8K' : '4K') : x >= 720 ? 'HD' : '', checked: !auto && P.manualQuality === x, action: () => chooseQuality(x) }))
   ], anchor, { above: true, cls: 'player-menu' });
 }
 
@@ -853,19 +725,10 @@ function captionsMenu(anchor) {
   menu([
     { header: 'Captions' },
     { label: 'Off', checked: !P.captionTrack, action: () => { set('captions', false); selectCaptions(null); } },
-    ...P.captionTracks.map((t) => ({ label: t.name + (t.auto ? ' (auto)' : ''), checked: P.captionTrack?.url === t.url, action: () => { set('captions', true); set('captionLanguage', t.lang.split('-')[0]); selectCaptions(t); } })),
+    ...P.captionTracks.map((t) => ({ label: t.name + (t.auto ? ' (auto)' : ''), checked: P.captionTrack?.lang === t.lang && P.captionTrack?.auto === t.auto, action: () => { set('captions', true); set('captionLanguage', t.lang.split('-')[0]); selectCaptions(t); } })),
     '-',
-    { label: 'Text size', hint: Math.round(settings.captionSize * 100) + '%', keepOpen: true, action: () => menu([{ header: 'Caption size' }, ...[0.75, 1, 1.25, 1.5, 2].map((s) => ({ label: Math.round(s * 100) + '%', checked: settings.captionSize === s, action: () => { set('captionSize', s); el.style.setProperty('--cc-scale', s); } }))], anchor, { above: true, cls: 'player-menu' }) }
+    { label: 'Text size', hint: Math.round(settings.captionSize * 100) + '%', keepOpen: true, action: () => menu([{ header: 'Caption size' }, ...[0.75, 1, 1.25, 1.5, 2].map((s) => ({ label: Math.round(s * 100) + '%', checked: settings.captionSize === s, action: () => { set('captionSize', s); if (P.captionTrack) selectCaptions(P.captionTrack); } }))], anchor, { above: true, cls: 'player-menu' }) }
   ], anchor, { above: true, cls: 'player-menu' });
-}
-
-function audioTracks() {
-  if (!sp) return [];
-  return [...new Set(sp.getVariantTracks().map((t) => t.language))];
-}
-function audioMenu(anchor) {
-  const cur = sp.getVariantTracks().find((t) => t.active)?.language;
-  menu([{ header: 'Audio track' }, ...audioTracks().map((l) => ({ label: l, checked: l === cur, action: () => sp.selectAudioLanguage(l) }))], anchor, { above: true, cls: 'player-menu' });
 }
 
 function sleepMenu(anchor) {
@@ -885,15 +748,9 @@ function sleepMenu(anchor) {
 function toggleAudioOnly() {
   P.audioOnly = !P.audioOnly;
   el.classList.toggle('audio-only', P.audioOnly);
-  if (!sp) return;
-  if (P.audioOnly) {
-    const lowest = qualityTracks().pop();
-    if (lowest) { sp.configure({ abr: { enabled: false } }); sp.selectVariantTrack(lowest.track, true); }
-    toast('Audio only — saving data');
-  } else {
-    applyQualityPreference();
-    toast('Video back on');
-  }
+  engine.setVisible(!P.audioOnly);
+  if (P.audioOnly) { engine.setQuality(144); toast('Audio only — saving data'); }
+  else { engine.setQuality(P.manualQuality || nearestLevel(settings.quality || 0) || 0); toast('Video back on'); }
 }
 
 let statsTimer = 0;
@@ -903,18 +760,17 @@ function toggleStats() {
   clearInterval(statsTimer);
   if (!on) return;
   const render = () => {
-    const s = sp?.getStats();
-    const t = sp?.getVariantTracks().find((x) => x.active);
+    const st = engine.state();
     statsBox.innerHTML = '';
     const rows = [
       ['Video', P.current?.id],
-      ['Source', P.info ? `${P.info.client} · ${P.info.kind.toUpperCase()}` : '—'],
-      ['Resolution', t ? `${t.width}×${t.height}@${Math.round(t.frameRate || 30)}` : '—'],
-      ['Codecs', t ? `${t.videoCodec || '?'} / ${t.audioCodec || '?'}` : '—'],
-      ['Bitrate', t ? `${Math.round((t.bandwidth || 0) / 1000)} kbps` : '—'],
-      ['Connection', s ? `${Math.round(s.estimatedBandwidth / 1e6 * 10) / 10} Mbps` : '—'],
-      ['Buffer', video.buffered.length ? `${Math.round(video.buffered.end(video.buffered.length - 1) - video.currentTime)} s` : '0 s'],
-      ['Dropped frames', s ? `${s.droppedFrames} / ${s.decodedFrames}` : '—']
+      ['Source', 'YouTube player'],
+      ['Resolution', st.w ? `${st.w}×${st.h}` : '—'],
+      ['Quality', st.q ? `${st.q}${P.manualQuality ? '' : ' (auto)'}` : '—'],
+      ['Available', qualityLevels().map(label).join(' · ') || '—'],
+      ['Buffer', video.buffered.length ? `${Math.max(0, Math.round(video.buffered.end(video.buffered.length - 1) - video.currentTime))} s` : '0 s'],
+      ['Dropped frames', `${st.dropped || 0} / ${st.frames || 0}`],
+      ['Ads', st.ad ? 'skipping one now' : 'none']
     ];
     for (const [k, v] of rows) statsBox.append(h('div', h('b', k), h('span', v || '—')));
   };
@@ -979,6 +835,7 @@ video.addEventListener('seeked', () => tick(true));
 video.addEventListener('volumechange', syncVolumeUI);
 video.addEventListener('ended', () => {
   syncPlayButton();
+  if (P.short) return;
   if (P.current) lib.setProgress(P.current.id, null);
   if (P.sleepEndOfVideo) { P.sleepEndOfVideo = false; toast('Sleep timer: stopped'); return; }
   const n = nextVideo();
@@ -1015,13 +872,14 @@ controls.addEventListener('dblclick', (e) => e.stopPropagation());
 let clickTimer = 0;
 el.addEventListener('click', (e) => {
   if (e.target.closest('.player-controls, .player-upnext, .player-error, .player-skip, .player-stats')) return;
-  if (P.mode === 'mini') return;
+  if (P.mode === 'mini') { nav.openWatch?.(); return; }
+  if (P.mode === 'short') { toggle(); emit('state'); return; }
   clearTimeout(clickTimer);
   clickTimer = setTimeout(() => toggle(), 200);
 });
 el.addEventListener('dblclick', (e) => {
   if (e.target.closest('.player-controls, .player-upnext, .player-error')) return;
-  if (P.mode === 'mini') return;
+  if (P.mode === 'mini' || P.mode === 'short') return;
   clearTimeout(clickTimer);
   toggleFullscreen();
 });
@@ -1052,6 +910,8 @@ document.addEventListener('fullscreenchange', () => {
   btnFull.append(ic(fs ? 'exitFullscreen' : 'fullscreen', 23));
   btnFull.title = fs ? 'Exit full screen (f)' : 'Full screen (f)';
   closeMenu();
+  lastRect = '';
+  requestAnimationFrame(place);
   emit('fullscreen', fs);
 });
 
@@ -1066,8 +926,10 @@ syncAutoplay();
 export function refreshSettings() {
   syncAutoplay();
   el.style.setProperty('--cc-scale', settings.captionSize || 1);
-  applyQualityRestrictions();
+  if (P.current && !P.manualQuality) {
+    const pref = settings.dataSaver ? Math.min(settings.quality || 480, 480) : settings.quality;
+    engine.setQuality(pref ? nearestLevel(pref) : 0);
+  }
   updateAmbientLoop();
 }
 
-export const videoElement = video;
