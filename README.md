@@ -22,7 +22,7 @@ Open the **Releases** page, download the newest `Premium-Setup-x.y.z.exe` and ru
 Every push to `main` runs **GitHub Actions** on a cloud Windows machine. It builds the installer with electron-builder and publishes it as a GitHub Release.
 
 - **Electron** for the app (`src/main` is the main process, `src/renderer` is the UI)
-- **youtubei.js** for stream URLs. It builds a DASH manifest from YouTube's separate video and audio streams, so every quality up to 8K is available and no stitched-in ads are included.
+- **youtubei.js** for stream URLs, with **bgutils-js** minting YouTube's proof-of-origin tokens in a hidden window (the same approach FreeTube uses). It builds a DASH manifest from YouTube's separate video and audio streams, so every quality up to 8K is available and no stitched-in ads are included.
 - **shaka-player** for playback
 - YouTube's web API for search, feeds, channels and comments. The parsing is ported from the iPhone app.
 - Video segments go through a small `ytv://` proxy in the main process, which sends the headers YouTube expects.

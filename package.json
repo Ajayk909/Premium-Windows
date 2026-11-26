@@ -2,7 +2,7 @@
   "name": "premium-windows",
   "productName": "Premium",
   "version": "0.1.0",
-  "description": "Premium for Windows \u2014 a personal, open-source, ad-free YouTube client in the Pearl Glass style",
+  "description": "Premium for Windows — a personal, open-source, ad-free YouTube client in the Pearl Glass style",
   "author": "Ajayk909",
   "license": "MIT",
   "type": "module",
@@ -12,6 +12,7 @@
     "dist": "electron-builder --win --x64 --publish never"
   },
   "dependencies": {
+    "bgutils-js": "^4.0.3",
     "shaka-player": "^5.3.6",
     "youtubei.js": "^18.3.0"
   },

@@ -149,6 +149,7 @@ export async function play(v, opts = {}) {
   P.error = null;
   P.failures = [];
   P.retriedSame = false;
+  switching = false;
   P.loading = true;
   P.ended = false;
   hideUpNext();
@@ -208,6 +209,7 @@ async function loadStreams(token, from, startAt) {
       info = await api.call('streams:get', v.id, from);
     } catch (err) {
       // The main process already tried every remaining client.
+      switching = false;
       if (token === P.token) showError(new Error([...(P.failures || []), String(err?.message || err)].join(' · ')));
       return;
     }
@@ -237,6 +239,7 @@ async function loadStreams(token, from, startAt) {
     await sp.load(uri, start ?? null, mime);
     if (token !== P.token) return;
     P.loading = false;
+    switching = false;
     applyQualityPreference();
     video.playbackRate = settings.speed || 1;
     video.volume = settings.volume ?? 1;
@@ -253,6 +256,7 @@ async function loadStreams(token, from, startAt) {
     if (P.info) P.failures.push(`${P.info.client}: ${err?.code ? 'shaka ' + err.code : String(err?.message || err)}`);
     const nextFrom = (P.info?.index ?? from) + 1;
     if (nextFrom < 7) return loadStreams(token, nextFrom, startAt ?? (video.currentTime > 1 ? video.currentTime : null));
+    switching = false;
     showError(new Error(P.failures.join(' · ') || String(err?.message || err)));
   }
 }
@@ -277,8 +281,12 @@ function armStartWatchdog(token, from) {
 }
 
 let lastFallbackToken = -1, fallbackCount = 0;
+let switching = false;
 function fallback(reason) {
   if (!P.current || !P.info) return;
+  // One failure can fire several errors (each segment request). Switch only once per source.
+  if (switching) return;
+  switching = true;
   if (lastFallbackToken !== P.token) { lastFallbackToken = P.token; fallbackCount = 0; }
   P.failures.push(`${P.info.client}: ${reason}`);
   if (++fallbackCount > 8) return showError(new Error(P.failures.join(' · ')));

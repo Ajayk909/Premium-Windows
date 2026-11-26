@@ -160,7 +160,7 @@ function registerIpc() {
   handle('yt:playlist', (id, cont) => yt.playlist(id, cont));
 
   // Streams
-  handle('streams:get', (id, from, skip) => streams.get(id, from, skip || []));
+  handle('streams:get', (id, from) => streams.get(id, from));
 
 }
 
