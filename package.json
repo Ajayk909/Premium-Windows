@@ -1,0 +1,55 @@
+{
+  "name": "premium-windows",
+  "productName": "Premium",
+  "version": "0.1.0",
+  "description": "Premium for Windows \u2014 a personal, open-source, ad-free YouTube client in the Pearl Glass style",
+  "author": "Ajayk909",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --x64 --publish never"
+  },
+  "dependencies": {
+    "shaka-player": "^5.3.6",
+    "youtubei.js": "^18.3.0"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.ajayk909.premium",
+    "productName": "Premium",
+    "artifactName": "Premium-Setup-${version}.${ext}",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Premium"
+    }
+  }
+}

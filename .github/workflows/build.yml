@@ -1,0 +1,55 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version number
+        shell: bash
+        run: |
+          echo "VERSION=0.1.${{ github.run_number }}" >> $GITHUB_ENV
+          npm version "0.1.${{ github.run_number }}" --no-git-tag-version --allow-same-version
+
+      - name: Install
+        run: npm ci
+
+      - name: Check the code parses
+        shell: bash
+        run: for f in $(find src -name "*.js" -o -name "*.cjs"); do node --check "$f"; done
+
+      - name: Build the Windows installer
+        run: npx electron-builder --win --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Publish the download (GitHub Release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: Premium for Windows ${{ env.VERSION }}
+          make_latest: true
+          body: |
+            **Premium-Setup-${{ env.VERSION }}.exe** — download and run it to install (or update) Premium.
+
+            Windows may show "Windows protected your PC" because the app isn't code-signed. Click **More info → Run anyway**.
+            The installer lets you pick the install folder, so you can put it on D:.
+          files: dist/Premium-Setup-*.exe
