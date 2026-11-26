@@ -21,6 +21,8 @@ function ensureWindow() {
   ready = (async () => {
     win = new BrowserWindow({
       show: false,
+      skipTaskbar: true,
+      focusable: false,
       width: 400,
       height: 300,
       webPreferences: {

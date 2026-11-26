@@ -61,6 +61,8 @@ function createWindow() {
   win.on('resize', debounce(saveBounds, 500));
   win.on('move', debounce(saveBounds, 500));
   win.on('close', saveBounds);
+  // Closing the main window quits Premium, even though the hidden PO-token window is still open.
+  win.on('closed', () => { win = null; store.flush(); app.quit(); });
   win.on('enter-full-screen', () => send('window:fullscreen', true));
   win.on('leave-full-screen', () => send('window:fullscreen', false));
   win.on('maximize', () => send('window:maximized', true));
@@ -80,7 +82,7 @@ function createWindow() {
 }
 
 function send(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(channel, payload);
 }
 
 function debounce(fn, ms) {
@@ -221,7 +223,7 @@ function registerSharedIpc() {
 
   // Window
   handle('win:titlebar', (color, symbol) => {
-    if (win && process.platform === 'win32') win.setTitleBarOverlay({ color, symbolColor: symbol, height: TITLEBAR_HEIGHT });
+    if (win && !win.isDestroyed() && process.platform === 'win32') win.setTitleBarOverlay({ color, symbolColor: symbol, height: TITLEBAR_HEIGHT });
     nativeTheme.themeSource = symbol.toLowerCase() === '#ffffff' ? 'dark' : 'light';
   });
   handle('win:fullscreen', (on) => win?.setFullScreen(!!on));
@@ -236,7 +238,10 @@ app.on('second-instance', (_e, argv) => {
   // Google's sign-in redirect arrives here as a premium link on the command line.
   const url = google.findUrl(argv);
   if (url) google.handleUrl(url);
-  if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+  if (!win || win.isDestroyed()) { createWindow(); return; }
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
 });
 
 app.whenReady().then(async () => {
