@@ -1,6 +1,7 @@
 // Subscriptions: newest uploads from every channel you follow (kept on this PC).
 import { h, ic, api, nav, toast, avatar, videoCard, shortTile, chips, loadingGrid, emptyState, dialog } from '../ui.js';
 import { library, lib, allowed } from '../state.js';
+import { account, signIn, onAccount } from '../account.js';
 
 const FILTERS = [
   { value: 'all', label: 'All' },
@@ -62,8 +63,12 @@ export function subsView() {
     grid.innerHTML = '';
     status.innerHTML = '';
     if (!library.subscriptions.length) {
-      status.append(emptyState('subs', 'No subscriptions yet', 'Subscribe to channels from any video or channel page, or bring yours over from YouTube with a Google Takeout file (subscriptions.csv).',
-        { label: 'Import from Google Takeout', fn: async () => { if (await importTakeout()) load(); } }));
+      const empty = emptyState('subs', 'No subscriptions yet', account.signedIn
+        ? 'Import your subscriptions from YouTube in Settings → Google account, or subscribe from any video or channel page.'
+        : 'Sign in with Google to bring your YouTube subscriptions over, or subscribe from any video or channel page.',
+        account.signedIn ? { label: 'Open Settings', fn: () => nav.go('settings') } : { label: 'Sign in with Google', fn: () => { signIn(); nav.go('settings'); } });
+      empty.append(h('button.btn.ghost.small', { onclick: async () => { if (await importTakeout()) load(); } }, ic('upload', 16), 'Or import a Google Takeout file'));
+      status.append(empty);
       return;
     }
     status.append(loadingGrid(8));
@@ -115,6 +120,10 @@ export function subsView() {
     ], { wide: true, onClose: load });
   }
 
+  // When a sign-in import finishes, show the new uploads straight away.
+  let lastCount = library.subscriptions.length;
+  onAccount(() => { if (!account.busy && library.subscriptions.length !== lastCount) { lastCount = library.subscriptions.length; if (el.isConnected) load(); } });
+
   load();
-  return { el, refresh: load };
+  return { el, refresh: load, onShow() { if (library.subscriptions.length !== lastCount) { lastCount = library.subscriptions.length; load(); } } };
 }

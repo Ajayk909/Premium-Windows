@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import * as yt from './innertube.js';
 import * as streams from './streams.js';
 import * as roku from './roku.js';
+import * as google from './google.js';
 import { Store } from './store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -182,6 +183,14 @@ async function registerMockIpc() {
 }
 
 function registerSharedIpc() {
+  // Google account (same sign-in as the iPhone app)
+  handle('google:status', () => google.status());
+  handle('google:signIn', () => google.signIn());
+  handle('google:cancel', () => google.cancel());
+  handle('google:signOut', () => google.signOut());
+  handle('google:import', () => google.importAll());
+  handle('google:profile', () => google.refreshProfile());
+
   // Storage
   handle('store:load', () => ({ library: store.get('library'), settings: store.get('settings') }));
   handle('store:save', (key, value) => { if (key === 'library' || key === 'settings') store.set(key, value); });
@@ -223,8 +232,11 @@ function registerSharedIpc() {
   handle('app:copy', (text) => import('electron').then(({ clipboard }) => clipboard.writeText(String(text))));
 }
 
-app.on('second-instance', () => {
-  if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
+app.on('second-instance', (_e, argv) => {
+  // Google's sign-in redirect arrives here as a premium link on the command line.
+  const url = google.findUrl(argv);
+  if (url) google.handleUrl(url);
+  if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 });
 
 app.whenReady().then(async () => {
@@ -236,6 +248,7 @@ app.whenReady().then(async () => {
       cb({ requestHeaders: details.requestHeaders });
     }
   );
+  google.init(app.getPath('userData'), (text) => send('google:progress', text));
   registerProxy();
   await registerIpc();
   streams.init(app.getPath('userData')).catch((e) => console.error('[streams:init]', e));

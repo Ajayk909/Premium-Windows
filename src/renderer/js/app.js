@@ -13,6 +13,7 @@ import { youView, listView, playlistsView, playlistView, statsView, ytPlaylistVi
 import { channelView } from './views/channel.js';
 import { settingsView } from './views/settings.js';
 import { castDialog } from './views/cast.js';
+import { account, onAccount, refreshOnLaunch } from './account.js';
 
 const VIEWS = {
   home: homeView,
@@ -424,6 +425,18 @@ document.addEventListener('paste', (e) => {
 // Drag the window by the title bar's empty space; double-click to maximise is handled by Windows.
 window.premium.on('window:fullscreen', (fs) => document.body.classList.toggle('win-fullscreen', fs));
 
+// ---------- Account avatar ----------
+
+function renderAvatar() {
+  const b = titlebar.querySelector('.tb-avatar');
+  b.innerHTML = '';
+  const p = account.signedIn ? account.profile : null;
+  b.append(avatar(p?.avatar || null, settings.name || p?.name || 'You', 32));
+  b.title = p ? `${p.name} — You` : 'You';
+}
+onAccount(renderAvatar);
+state.on('settings', (k) => { if (k === 'name') renderAvatar(); });
+
 // ---------- Boot ----------
 
 async function boot() {
@@ -434,9 +447,10 @@ async function boot() {
   renderSidebar();
   go('home');
   document.body.classList.add('ready');
+  refreshOnLaunch();
 }
 
 boot();
 
 // Handy for debugging from DevTools (F12 in development).
-window.__premium = { go, back, nav, player, state };
+window.__premium = { go, back, nav, player, state, account };

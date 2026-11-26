@@ -51,6 +51,8 @@ const settingsDefaults = () => ({
   rokuName: null,
   sidebarCollapsed: false,
   showDislikes: true,
+  syncOnLaunch: true,
+  lastSync: 0,
   name: ''
 });
 
@@ -145,6 +147,19 @@ export const lib = {
     }
     if (added) saveLibrary();
     return added;
+  },
+  upsertPlaylist(name, sourceID, videos) {
+    const p = library.playlists.find((x) => x.sourceID === sourceID);
+    if (p) { p.name = name; p.videos = videos.map(slim); }
+    else library.playlists.push({ id: crypto.randomUUID(), name, sourceID, videos: videos.map(slim) });
+    saveLibrary();
+  },
+  mergeLiked(list) {
+    const have = new Set(library.liked.map((v) => v.id));
+    const fresh = list.filter((v) => !have.has(v.id));
+    library.liked.push(...fresh.map(slim));
+    if (fresh.length) saveLibrary();
+    return fresh.length;
   },
   updateChannel(c) {
     const s = library.subscriptions.find((x) => x.id === c.id);

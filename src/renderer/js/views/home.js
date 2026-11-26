@@ -1,6 +1,7 @@
 // Home: greeting, chips, and a mixed feed from your subscriptions and what you watch.
 import { h, ic, api, videoCard, shortTile, chips, loadingGrid, emptyState, infinite } from '../ui.js';
 import { library, settings, allowed } from '../state.js';
+import { account } from '../account.js';
 
 const CHIPS = ['All', 'Music', 'Gaming', 'Podcasts', 'Live', 'News', 'Tech', 'Cooking', 'Sports', 'Comedy', 'Science', 'Recently uploaded'];
 const STARTER = ['trending today', 'new music video', 'tech review', 'gaming highlights', 'podcast clips', 'travel vlog', 'cooking recipe', 'science explained', 'comedy sketch', 'documentary'];
@@ -30,7 +31,8 @@ export function homeView() {
     const line1 = hr < 12 ? 'Good morning' : hr < 18 ? 'Good afternoon' : 'Good evening';
     const line2 = hr >= 18 ? 'What\'s on tonight?' : 'What are we watching?';
     greet.innerHTML = '';
-    greet.append(h('h1', h('span', line1 + (settings.name ? `, ${settings.name}` : '')), h('span.faded', line2)));
+    const who = settings.name || (account.signedIn ? (account.profile?.name || '').split(' ')[0] : '');
+    greet.append(h('h1', h('span', line1 + (who ? `, ${who}` : '')), h('span.faded', line2)));
     const cont = library.history.find((v) => library.progress[v.id] > 30 && !v.isShort);
     if (cont) greet.append(continueCard(cont));
   }

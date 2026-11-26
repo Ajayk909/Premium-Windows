@@ -11,6 +11,7 @@ A personal, open-source, ad-free YouTube client for Windows: the desktop version
 - **You**: watch time, History, Watch later, Liked videos and playlists.
 - **Channel pages**: Videos, Shorts, Live and About.
 - **Cast to Roku**: finds your Roku on the network, plays the video in the TV's YouTube app, and gives you a full remote.
+- **Google sign-in**: works like the iPhone app. Sign in once in your browser and Premium imports your subscriptions, playlists and liked videos, then picks up new subscriptions once a day. Access is read-only, and the sign-in is encrypted with Windows data protection.
 - **Settings**: 4 themes, evening mode, feed rules (muted words, blocked channels, length limit), SponsorBlock categories, and backup and restore.
 - **Windows extras**: media keys, YouTube's keyboard shortcuts (K/J/L, F, T, I, M, C, arrows, 0–9), mouse back/forward buttons, and a title bar that matches the theme.
 

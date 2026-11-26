@@ -1,6 +1,7 @@
 // You: watch time, history, Watch later, liked videos, playlists, stats.
 import { h, ic, api, nav, toast, avatar, videoCard, videoRow, emptyState, prompt, menu, formatDuration, thumb, spinner, infinite } from '../ui.js';
 import { library, lib, settings } from '../state.js';
+import { account, signIn } from '../account.js';
 
 const LISTS = {
   history: { title: 'History', icon: 'history', get: () => library.history, remove: (id) => lib.removeHistory(id), empty: 'Videos you watch will show up here.' },
@@ -13,15 +14,17 @@ export function youView() {
 
   function render() {
     el.innerHTML = '';
-    const name = settings.name || 'You';
+    const p = account.signedIn ? account.profile : null;
+    const name = settings.name || p?.name || 'You';
     el.append(
       h('div.you-header',
-        avatar(null, name, 88, 'you-avatar'),
+        avatar(p?.avatar || null, name, 88, 'you-avatar'),
         h('div',
           h('h1', name),
           h('div.faded', `${library.subscriptions.length} subscriptions · ${library.history.length} watched · ${library.playlists.length} playlists`),
           h('div.you-buttons',
             h('button.btn.ghost.small', { onclick: async () => { const n = await prompt('Your name', settings.name, 'Shown on Home and here'); if (n != null) { (await import('../state.js')).set('name', n); render(); } } }, 'Edit name'),
+            !account.signedIn ? h('button.btn.ghost.small', { onclick: () => { signIn(); nav.go('settings'); } }, ic('you', 16), 'Sign in with Google') : null,
             h('button.btn.ghost.small', { onclick: () => nav.go('settings') }, ic('settings', 16), 'Settings')))),
       h('div.you-grid',
         weekCard(),

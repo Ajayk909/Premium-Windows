@@ -990,3 +990,23 @@ kbd { font: 600 11.5px var(--font); padding: 3px 7px; border-radius: 7px; backgr
 
 /* The mini player steps aside on Shorts so it never covers the feed. */
 body.on-shorts .mini { opacity: 0; pointer-events: none; transform: translateY(calc(100% + 40px)); }
+
+/* ---------- Google account ---------- */
+
+.account-card { position: relative; overflow: hidden; }
+.account-card::before {
+  content: ""; position: absolute; left: -10%; right: -10%; top: -60%; height: 120%; background: var(--rainbow-line);
+  filter: blur(60px); opacity: .10; pointer-events: none;
+}
+[data-theme="classic"] .account-card::before { display: none; }
+.account-row, .account-signin { position: relative; display: flex; align-items: center; gap: 14px; padding: 6px 0 12px; }
+.account-text { flex: 1; min-width: 0; }
+.account-name { font-weight: 700; font-size: 15px; }
+.account-avatar::after { content: ""; position: absolute; inset: 0; border-radius: 50%; padding: 2px; background: var(--rainbow); -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+[data-theme="classic"] .account-avatar::after { display: none; }
+.account-g { width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center; background: #fff; box-shadow: var(--shadow-soft), inset 0 0 0 1px var(--hairline); flex: none; }
+.btn.google { background: #fff; color: #1f1f1f; box-shadow: 0 6px 16px rgba(60, 64, 90, .12), inset 0 0 0 1px rgba(0, 0, 0, .12); padding: 0 18px 0 14px; }
+.btn.google:hover { box-shadow: 0 8px 22px rgba(60, 64, 90, .18), inset 0 0 0 1px rgba(0, 0, 0, .16); }
+.account-status { position: relative; display: flex; align-items: center; gap: 10px; margin: 2px 0 10px; padding: 10px 14px; border-radius: 14px; background: var(--hover); font-size: 13px; color: var(--ink2); line-height: 1.4; }
+.spinner.tiny { width: 14px; height: 14px; border-width: 2px; flex: none; }
+.empty .btn.ghost.small { margin-top: 2px; }

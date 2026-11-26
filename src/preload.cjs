@@ -10,7 +10,7 @@ async function call(name, ...args) {
 contextBridge.exposeInMainWorld('premium', {
   call,
   on(channel, fn) {
-    const allowed = ['window:fullscreen', 'window:maximized'];
+    const allowed = ['window:fullscreen', 'window:maximized', 'google:progress'];
     if (!allowed.includes(channel)) return () => {};
     const h = (_e, payload) => fn(payload);
     ipcRenderer.on(channel, h);

@@ -50,6 +50,14 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Premium"
-    }
+    },
+    "protocols": [
+      {
+        "name": "Premium Google sign-in",
+        "schemes": [
+          "com.googleusercontent.apps.62470698860-0bihfg57s15kr4tpcqcl2ch1eektusu3"
+        ]
+      }
+    ]
   }
 }
