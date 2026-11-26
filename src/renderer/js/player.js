@@ -5,6 +5,13 @@ import { settings, set, lib, library } from './state.js';
 
 const shaka = window.shaka;
 
+// shaka only knows http(s)/data/blob, so teach it our ytv:// proxy scheme (main.js) via fetch.
+if (window.shaka && !window.__ytvScheme) {
+  window.__ytvScheme = true;
+  window.shaka.net.NetworkingEngine.registerScheme('ytv', window.shaka.net.HttpFetchPlugin.parse,
+    window.shaka.net.NetworkingEngine.PluginPriority.PREFERRED);
+}
+
 const listeners = new Map();
 function emit(evt, payload) { for (const fn of listeners.get(evt) || []) { try { fn(payload); } catch (e) { console.error(e); } } }
 
@@ -307,6 +314,7 @@ function friendly(err) {
   if (/private/i.test(m)) return 'This video is private.';
   if (/unavailable|removed|terminated/i.test(m)) return 'YouTube says this video isn\'t available.';
   if (/network|fetch|ENOTFOUND|ECONN|timed? ?out/i.test(m)) return 'Check your internet connection.';
+  if (/^shaka \d+/.test(m)) return `YouTube's video servers refused every way we tried (error ${m.slice(6)}). Try again, or open it on YouTube.`;
   return m.length < 140 ? m : 'YouTube refused all the ways we tried to play it.';
 }
 

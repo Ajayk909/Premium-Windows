@@ -2,6 +2,13 @@
 import { previewHooks, api, h } from './ui.js';
 
 const shaka = window.shaka;
+
+// shaka only knows http(s)/data/blob, so teach it our ytv:// proxy scheme (main.js) via fetch.
+if (window.shaka && !window.__ytvScheme) {
+  window.__ytvScheme = true;
+  window.shaka.net.NetworkingEngine.registerScheme('ytv', window.shaka.net.HttpFetchPlugin.parse,
+    window.shaka.net.NetworkingEngine.PluginPriority.PREFERRED);
+}
 let sp = null;
 let token = 0;
 const cache = new Map();

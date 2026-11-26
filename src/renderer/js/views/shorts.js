@@ -4,6 +4,13 @@ import { h, ic, api, nav, toast, avatar, chips, emptyState, spinner, saveDialog 
 import { library, lib, settings, set, allowed } from '../state.js';
 
 const shaka = window.shaka;
+
+// shaka only knows http(s)/data/blob, so teach it our ytv:// proxy scheme (main.js) via fetch.
+if (window.shaka && !window.__ytvScheme) {
+  window.__ytvScheme = true;
+  window.shaka.net.NetworkingEngine.registerScheme('ytv', window.shaka.net.HttpFetchPlugin.parse,
+    window.shaka.net.NetworkingEngine.PluginPriority.PREFERRED);
+}
 const SEEDS = ['#shorts', 'funny #shorts', 'satisfying #shorts', 'gaming #shorts', 'music #shorts', 'tech #shorts', 'food #shorts', 'sports #shorts', 'science #shorts', 'travel #shorts'];
 
 let sp = null;
