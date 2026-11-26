@@ -147,6 +147,8 @@ export async function play(v, opts = {}) {
   P.captionTrack = null;
   P.cues = [];
   P.error = null;
+  P.failures = [];
+  P.retriedSame = false;
   P.loading = true;
   P.ended = false;
   hideUpNext();
@@ -206,7 +208,7 @@ async function loadStreams(token, from, startAt) {
       info = await api.call('streams:get', v.id, from);
     } catch (err) {
       // The main process already tried every remaining client.
-      if (token === P.token) showError(err);
+      if (token === P.token) showError(new Error([...(P.failures || []), String(err?.message || err)].join(' · ')));
       return;
     }
     if (token !== P.token) return;
@@ -248,9 +250,10 @@ async function loadStreams(token, from, startAt) {
   } catch (err) {
     if (token !== P.token) return;
     console.warn('[player] load failed', from, err);
+    if (P.info) P.failures.push(`${P.info.client}: ${err?.code ? 'shaka ' + err.code : String(err?.message || err)}`);
     const nextFrom = (P.info?.index ?? from) + 1;
-    if (nextFrom < 6) return loadStreams(token, nextFrom, startAt ?? (video.currentTime > 1 ? video.currentTime : null));
-    showError(err);
+    if (nextFrom < 7) return loadStreams(token, nextFrom, startAt ?? (video.currentTime > 1 ? video.currentTime : null));
+    showError(new Error(P.failures.join(' · ') || String(err?.message || err)));
   }
 }
 
@@ -277,18 +280,27 @@ let lastFallbackToken = -1, fallbackCount = 0;
 function fallback(reason) {
   if (!P.current || !P.info) return;
   if (lastFallbackToken !== P.token) { lastFallbackToken = P.token; fallbackCount = 0; }
-  if (++fallbackCount > 5) return showError(new Error(reason));
+  P.failures.push(`${P.info.client}: ${reason}`);
+  if (++fallbackCount > 8) return showError(new Error(P.failures.join(' · ')));
   const at = video.currentTime > 1 ? video.currentTime : null;
-  console.warn('[player] falling back from', P.info.client, 'because', reason);
+  // If this source played fine for a while, its links probably just went stale: fetch fresh
+  // ones from the same source once before moving on to the next.
+  const refreshSame = video.currentTime > 20 && !P.retriedSame;
+  if (refreshSame) P.retriedSame = true;
+  const from = refreshSame ? P.info.index : P.info.index + 1;
+  console.warn('[player] falling back from', P.info.client, 'because', reason, refreshSame ? '(refreshing same source)' : '');
   setBuffering(true);
-  loadStreams(P.token, P.info.index + 1, at);
+  loadStreams(P.token, from, at);
 }
 
 function onShakaError(err) {
   if (!err) return;
   console.warn('[shaka]', err.code, err);
   // 1001/1002: HTTP failures (403 = link refused), 3016: decode error, 4000s: manifest problems.
-  if (err.severity === 2 || [1001, 1002, 1003, 3014, 3015, 3016].includes(err.code)) fallback('shaka ' + err.code);
+  if (err.severity === 2 || [1001, 1002, 1003, 3014, 3015, 3016].includes(err.code)) {
+    const why = err.code === 1001 ? `HTTP ${err.data?.[1] ?? '?'}` : err.code === 1003 ? 'timed out' : `shaka ${err.code}`;
+    fallback(why);
+  }
 }
 
 function showError(err) {
@@ -301,6 +313,7 @@ function showError(err) {
     h('div.player-error-icon', ic('sparkle', 28)),
     h('h3', 'This video can\'t play right now'),
     h('p', friendly(err)),
+    String(err?.message || '').includes(':') ? h('p.player-error-details', String(err.message)) : null,
     h('div.player-error-actions',
       h('button.btn.light', { onclick: () => play(P.current, { force: true }) }, ic('refresh', 18), 'Try again'),
       h('button.btn.ghost-light', { onclick: () => api.call('app:open', `https://www.youtube.com/watch?v=${P.current.id}`) }, ic('external', 18), 'Open on YouTube'))
@@ -310,6 +323,11 @@ function showError(err) {
 
 function friendly(err) {
   const m = String(err?.message || err || '');
+  if (m.includes(' · ') || /^[A-Z_]+: /.test(m)) {
+    if (/age|sign in to confirm/i.test(m)) return 'YouTube asks for an age check on this one.';
+    if (/private/i.test(m)) return 'This video is private.';
+    return 'YouTube refused all the ways we tried to play it. The details below tell me what went wrong.';
+  }
   if (/sign in to confirm your age|age/i.test(m)) return 'YouTube asks for an age check on this one.';
   if (/private/i.test(m)) return 'This video is private.';
   if (/unavailable|removed|terminated/i.test(m)) return 'YouTube says this video isn\'t available.';

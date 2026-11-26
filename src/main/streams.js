@@ -37,9 +37,12 @@ function client() {
 
 // Different YouTube clients work in different situations (age limits, region, made-for-kids,
 // throttling). We try them in order and the player moves to the next one if playback fails.
-const CLIENTS = ['TV', 'ANDROID_VR', 'IOS', 'WEB_EMBEDDED', 'WEB', 'MWEB'];
+// ANDROID_VR first: its links need no deciphering and no proof-of-origin token, so they keep
+// working for the whole video. The others are fallbacks for videos it can't open.
+const CLIENTS = ['ANDROID_VR', 'TV', 'IOS', 'WEB_EMBEDDED', 'TV_SIMPLY', 'WEB', 'MWEB'];
 
 const UAS = {
+  TVHTML5_SIMPLY: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)',
   TVHTML5: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)',
   ANDROID_VR: 'com.google.android.apps.youtube.vr.oculus/1.65.10 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip',
   ANDROID: 'com.google.android.youtube/21.03.36(Linux; U; Android 16; en_US; SM-S908E Build/TP1A.220624.014) gzip',
@@ -63,16 +66,17 @@ function reasonOf(info) {
   return s?.reason || s?.error_screen?.reason?.toString?.() || s?.status || 'unavailable';
 }
 
-export async function get(id, from = 0) {
+export async function get(id, from = 0, skip = []) {
   const yt = await client();
-  let lastReason = 'Couldn\'t find a playable stream for this video.';
+  const reasons = [];
   for (let i = Math.max(0, from); i < CLIENTS.length; i++) {
     const name = CLIENTS[i];
+    if (skip.includes(name)) continue;
     try {
       const info = await yt.getBasicInfo(id, { client: name });
-      if (!playable(info)) { lastReason = reasonOf(info); continue; }
+      if (!playable(info)) { reasons.push(`${name}: ${reasonOf(info)}`); continue; }
       const sd = info.streaming_data;
-      if (!sd) continue;
+      if (!sd) { reasons.push(`${name}: no streams`); continue; }
       const vd = info.basic_info || {};
       const captions = (info.captions?.caption_tracks || []).map((t) => ({
         name: t.name?.toString?.() || t.language_code,
@@ -92,22 +96,28 @@ export async function get(id, from = 0) {
 
       if (vd.is_live || (vd.is_live_content && !sd.adaptive_formats?.length)) {
         const url = sd.hls_manifest_url || sd.dash_manifest_url;
-        if (!url) continue;
+        if (!url) { reasons.push(`${name}: no live manifest`); continue; }
         return { ...common, kind: sd.hls_manifest_url ? 'hls' : 'dash-url', url, live: !!vd.is_live };
       }
-      if (!sd.adaptive_formats?.length) continue;
+      // Some clients only offer formats without direct links (YouTube's SABR streaming); skip those.
+      const usable = (sd.adaptive_formats || []).filter((f) => f.url || f.signature_cipher || f.cipher);
+      if (!usable.length) { reasons.push(`${name}: no direct links`); continue; }
 
-      const manifest = await info.toDash({ manifest_options: { include_thumbnails: false } });
-      if (!manifest || !manifest.includes('<Representation')) continue;
+      const manifest = await info.toDash({
+        manifest_options: { include_thumbnails: false },
+        format_filter: (f) => !f.url && !f.signature_cipher && !f.cipher
+      });
+      if (!manifest || !manifest.includes('<Representation')) { reasons.push(`${name}: empty manifest`); continue; }
 
-      const heights = [...new Set(sd.adaptive_formats.filter((f) => f.has_video && f.height).map((f) => Math.min(f.height, f.width || f.height)))].sort((a, b) => b - a);
+      const heights = [...new Set(usable.filter((f) => f.has_video && f.height).map((f) => Math.min(f.height, f.width || f.height)))].sort((a, b) => b - a);
       return { ...common, kind: 'dash', manifest, heights };
     } catch (err) {
-      lastReason = String(err?.message || err);
-      console.warn(`[streams] ${name} failed for ${id}:`, lastReason);
+      const msg = String(err?.message || err);
+      reasons.push(`${name}: ${msg}`);
+      console.warn(`[streams] ${name} failed for ${id}:`, msg);
     }
   }
-  throw new Error(lastReason);
+  throw new Error(reasons.length ? reasons.join(' · ') : 'Couldn\'t find a playable stream for this video.');
 }
 
 export const clientCount = CLIENTS.length;
